@@ -1,0 +1,140 @@
+name: Docker Rollout Deploy
+description: Zero-downtime Docker Compose deploys over SSH with docker-rollout — upload files, pull, migrate, roll out.
+author: Mitya Grebenshchikov
+
+branding:
+  icon: refresh-cw
+  color: blue
+
+inputs:
+  host:
+    description: SSH host of the server.
+    required: true
+  port:
+    description: SSH port.
+    default: "22"
+  user:
+    description: SSH user. Must be able to run `docker` without sudo.
+    required: true
+  ssh-key:
+    description: Private SSH key (without passphrase).
+    required: true
+  known-hosts:
+    description: >
+      known_hosts line(s) for the server, e.g. the output of `ssh-keyscan -p <port> <host>`.
+      Strongly recommended: when empty, the host key is fetched with ssh-keyscan at runtime
+      (trust on first use) and a warning is emitted.
+    default: ""
+  project-dir:
+    description: Directory on the server with the Compose project. Created if missing.
+    required: true
+  files:
+    description: >
+      Local files to upload into project-dir before deploying, one per line, as `local` or
+      `local:remote` (remote is relative to project-dir unless absolute).
+      Example: `deploy/compose.prod.yml:compose.yml`.
+    default: ""
+  compose-files:
+    description: >
+      Compose files on the server (relative to project-dir), whitespace-separated.
+      Exported as COMPOSE_FILE, so pre-deploy/post-deploy commands use them too.
+      Empty = Compose defaults (compose.yml / docker-compose.yml).
+    default: ""
+  project-name:
+    description: Compose project name (exported as COMPOSE_PROJECT_NAME). Empty = Compose default.
+    default: ""
+  services:
+    description: Services to roll out with zero downtime via `docker rollout`, whitespace-separated. Rolled out one by one in the given order.
+    default: ""
+  up-services:
+    description: >
+      Services to update with plain `docker compose up -d` after the rollout (workers, databases,
+      anything with `container_name` or published `ports`), whitespace-separated.
+    default: ""
+  up-flags:
+    description: Extra flags for `docker compose up -d`, e.g. `--remove-orphans`.
+    default: ""
+  pull:
+    description: Run `docker compose pull` for `services` and `up-services` before deploying.
+    default: "true"
+  registry:
+    description: Registry to log into on the server before pulling, e.g. `ghcr.io`. Credentials are kept in a temporary DOCKER_CONFIG and removed after the deploy.
+    default: ""
+  registry-username:
+    description: Registry username.
+    default: ""
+  registry-password:
+    description: Registry password or token, e.g. `secrets.GITHUB_TOKEN` for GHCR.
+    default: ""
+  pre-deploy:
+    description: >
+      Shell command run in project-dir after pulling and before the rollout, e.g.
+      `docker compose run --rm api alembic upgrade head`. A failure aborts the deploy.
+    default: ""
+  post-deploy:
+    description: Shell command run in project-dir after a successful deploy.
+    default: ""
+  healthcheck:
+    description: >
+      What to do when a running container of a rolled-out service has no Docker healthcheck:
+      `warn`, `require` (fail before deploying) or `ignore`. Without a healthcheck docker-rollout
+      only waits `wait` seconds and cannot tell whether the new container is actually ready.
+    default: warn
+  timeout:
+    description: Seconds to wait for new containers to become healthy (`docker rollout --timeout`).
+    default: "60"
+  wait:
+    description: Seconds to wait when the service has no healthcheck (`docker rollout --wait`).
+    default: "10"
+  wait-after-healthy:
+    description: Extra seconds to wait after new containers are healthy (`docker rollout --wait-after-healthy`).
+    default: "0"
+  pre-stop-hook:
+    description: >
+      Command run in old containers before stopping them (`docker rollout --pre-stop-hook`),
+      e.g. `touch /tmp/drain && sleep 10` for connection draining. Empty = use the
+      `docker-rollout.pre-stop-hook` label, if any.
+    default: ""
+  rollout-install:
+    description: "Install the docker-rollout plugin on the server: `if-missing`, `always` or `never`."
+    default: if-missing
+  rollout-version:
+    description: docker-rollout release to install.
+    default: v0.14
+  prune:
+    description: Run `docker image prune -f` after a successful deploy.
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Deploy
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/src/deploy.sh"
+      env:
+        DRA_HOST: ${{ inputs.host }}
+        DRA_PORT: ${{ inputs.port }}
+        DRA_USER: ${{ inputs.user }}
+        DRA_SSH_KEY: ${{ inputs.ssh-key }}
+        DRA_KNOWN_HOSTS: ${{ inputs.known-hosts }}
+        DRA_PROJECT_DIR: ${{ inputs.project-dir }}
+        DRA_FILES: ${{ inputs.files }}
+        DRA_COMPOSE_FILES: ${{ inputs.compose-files }}
+        DRA_PROJECT_NAME: ${{ inputs.project-name }}
+        DRA_SERVICES: ${{ inputs.services }}
+        DRA_UP_SERVICES: ${{ inputs.up-services }}
+        DRA_UP_FLAGS: ${{ inputs.up-flags }}
+        DRA_PULL: ${{ inputs.pull }}
+        DRA_REGISTRY: ${{ inputs.registry }}
+        DRA_REGISTRY_USERNAME: ${{ inputs.registry-username }}
+        DRA_REGISTRY_PASSWORD: ${{ inputs.registry-password }}
+        DRA_PRE_DEPLOY: ${{ inputs.pre-deploy }}
+        DRA_POST_DEPLOY: ${{ inputs.post-deploy }}
+        DRA_HEALTHCHECK: ${{ inputs.healthcheck }}
+        DRA_TIMEOUT: ${{ inputs.timeout }}
+        DRA_WAIT: ${{ inputs.wait }}
+        DRA_WAIT_AFTER_HEALTHY: ${{ inputs.wait-after-healthy }}
+        DRA_PRE_STOP_HOOK: ${{ inputs.pre-stop-hook }}
+        DRA_ROLLOUT_INSTALL: ${{ inputs.rollout-install }}
+        DRA_ROLLOUT_VERSION: ${{ inputs.rollout-version }}
+        DRA_PRUNE: ${{ inputs.prune }}

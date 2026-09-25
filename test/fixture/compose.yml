@@ -1,0 +1,47 @@
+# Test stack: Traefik in front of a tiny nginx "app" that serves $APP_VERSION.
+# APP_BROKEN=1 makes the new app container fail its healthcheck.
+name: dra-e2e
+
+services:
+  traefik:
+    image: traefik:v3.6
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+    ports:
+      - "${TRAEFIK_PORT:-18080}:80"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  app:
+    image: ${APP_IMAGE}
+    environment:
+      APP_VERSION: ${APP_VERSION}
+      APP_BROKEN: ${APP_BROKEN:-0}
+    command:
+      - sh
+      - -c
+      - |
+        if [ "$$APP_BROKEN" = 1 ]; then rm -f /usr/share/nginx/html/index.html
+        else echo "$$APP_VERSION" > /usr/share/nginx/html/index.html; fi
+        exec nginx -g 'daemon off;'
+    healthcheck:
+      # Fails once /tmp/drain exists, so Traefik stops routing before the container stops.
+      test: test ! -f /tmp/drain && wget -qO /dev/null http://127.0.0.1/
+      interval: 1s
+      timeout: 1s
+      retries: 1
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.app.rule: PathPrefix(`/`)
+      traefik.http.routers.app.entrypoints: web
+      traefik.http.services.app.loadbalancer.server.port: "80"
+
+  worker:
+    image: ${APP_IMAGE}
+    container_name: dra-e2e-worker
+    init: true
+    environment:
+      APP_VERSION: ${APP_VERSION}
+    command: ["sh", "-c", "echo worker $$APP_VERSION; exec tail -f /dev/null"]

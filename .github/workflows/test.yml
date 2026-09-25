@@ -1,0 +1,108 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: shellcheck
+        run: shellcheck -x src/*.sh test/*.sh test/server/entrypoint.sh
+
+      - name: actionlint
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint -color
+
+  e2e:
+    runs-on: ubuntu-latest
+    env:
+      DRA_TEST_DIR: /tmp/dra-e2e
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Start SSH server and registry
+        id: env
+        run: |
+          bash test/setup.sh
+          {
+            echo 'ssh-key<<EOF'
+            cat "$DRA_TEST_DIR/id_ed25519"
+            echo 'EOF'
+            echo 'known-hosts<<EOF'
+            cat "$DRA_TEST_DIR/known_hosts"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+          bash test/env.sh 1 > "$DRA_TEST_DIR/app.env"
+
+      - name: "1. First deploy (v1)"
+        uses: ./
+        with: &deploy
+          host: 127.0.0.1
+          port: 2222
+          user: deploy
+          ssh-key: ${{ steps.env.outputs.ssh-key }}
+          known-hosts: ${{ steps.env.outputs.known-hosts }}
+          project-dir: apps/e2e
+          files: |
+            test/fixture/compose.yml
+            ${{ env.DRA_TEST_DIR }}/app.env:.env
+          services: app
+          up-services: traefik worker
+          up-flags: --remove-orphans
+          registry: localhost:15000
+          registry-username: tester
+          registry-password: secret
+          pre-deploy: docker compose run --rm app sh -c 'echo migrating' && touch pre-deploy.done
+          healthcheck: require
+          timeout: 20
+          pre-stop-hook: touch /tmp/drain && sleep 3
+
+      - run: bash test/expect-version.sh 1
+
+      - name: Start load (v2)
+        run: |
+          bash test/env.sh 2 > "$DRA_TEST_DIR/app.env"
+          bash test/load.sh start "$DRA_TEST_DIR/load.log"
+
+      - name: "2. Zero-downtime deploy under load (v2)"
+        uses: ./
+        with: *deploy
+
+      - name: Check no request failed
+        run: |
+          bash test/load.sh stop "$DRA_TEST_DIR/load.log"
+          bash test/expect-version.sh 2
+
+      - name: Start load (broken v3)
+        run: |
+          bash test/env.sh 3 1 > "$DRA_TEST_DIR/app.env"
+          bash test/load.sh start "$DRA_TEST_DIR/load.log"
+
+      - name: "3. Broken release must fail"
+        id: broken
+        continue-on-error: true
+        uses: ./
+        with: *deploy
+
+      - name: Check rollback kept serving v2
+        run: |
+          [[ "${{ steps.broken.outcome }}" == failure ]] || { echo "broken deploy did not fail"; exit 1; }
+          bash test/load.sh stop "$DRA_TEST_DIR/load.log"
+          bash test/expect-version.sh 2
+
+      - name: "4. Side effects"
+        run: bash test/assert-side-effects.sh
+
+      - name: Teardown
+        if: always()
+        run: bash test/teardown.sh
